@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.pos.auto.invoice</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="point_of_sale.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//block[@id='pos_accounting_section']" position="after">
+                <block title="Facturación Automática" id="pos_auto_invoice_section">
+                    <setting string="Facturación automática de recibos"
+                        help="Factura automáticamente el porcentaje configurado del total vendido en el día en el diario AFIP, y el resto de las ventas en el diario secundario (sin AFIP). Se descuenta lo ya facturado manualmente desde el POS.">
+                        <field name="pos_auto_invoice_enabled"/>
+                        <div class="content-group" invisible="not pos_auto_invoice_enabled">
+                            <div class="row mt16">
+                                <label string="Porcentaje del día" for="pos_auto_invoice_percent" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_percent" required="pos_auto_invoice_enabled"/>
+                                </div>
+                            </div>
+                            <div class="row mt16">
+                                <label string="Diario AFIP (para el %)" for="pos_auto_invoice_journal_id" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_journal_id"
+                                        domain="[('type', '=', 'sale')]"
+                                        options="{'no_create': True, 'no_open': True}"/>
+                                </div>
+                            </div>
+                            <div class="row mt16">
+                                <label string="Diario para el resto" for="pos_auto_invoice_secondary_journal_id" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_secondary_journal_id"
+                                        domain="[('type', '=', 'sale')]"
+                                        options="{'no_create': True, 'no_open': True}"/>
+                                </div>
+                            </div>
+                            <div class="row mt16">
+                                <label string="Cliente Consumidor Final" for="pos_auto_invoice_partner_id" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_partner_id" options="{'no_open': True}"/>
+                                </div>
+                            </div>
+                            <div class="row mt16">
+                                <label string="Frecuencia (veces al día)" for="pos_auto_invoice_frequency" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_frequency" required="pos_auto_invoice_enabled"/>
+                                </div>
+                            </div>
+                            <div class="row mt16">
+                                <label string="Máx. facturas por ejecución" for="pos_auto_invoice_max_per_run" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_max_per_run" required="pos_auto_invoice_enabled"/>
+                                </div>
+                            </div>
+                            <div class="mt8">
+                                <button name="action_pos_auto_invoice_simulate" type="object"
+                                    string="Simular" class="btn-secondary" icon="oi-search"/>
+                                <button name="action_pos_auto_invoice_run_now" type="object"
+                                    string="Ejecutar ahora" class="btn-primary" icon="oi-play"
+                                    confirm="Se generarán facturas reales para los pedidos seleccionados. ¿Continuar?"/>
+                            </div>
+                        </div>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>

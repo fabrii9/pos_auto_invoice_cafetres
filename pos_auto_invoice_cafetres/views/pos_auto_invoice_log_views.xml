@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="pos_auto_invoice_log_view_list" model="ir.ui.view">
+        <field name="name">pos.auto.invoice.log.list</field>
+        <field name="model">pos.auto.invoice.log</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="create_date"/>
+                <field name="config_id"/>
+                <field name="date"/>
+                <field name="is_simulation"/>
+                <field name="total_day"/>
+                <field name="percent"/>
+                <field name="target_amount"/>
+                <field name="already_invoiced"/>
+                <field name="invoiced_amount"/>
+                <field name="secondary_invoiced_amount"/>
+                <field name="order_count"/>
+                <field name="error_count" widget="badge" decoration-danger="error_count &gt; 0"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="pos_auto_invoice_log_view_form" model="ir.ui.view">
+        <field name="name">pos.auto.invoice.log.form</field>
+        <field name="model">pos.auto.invoice.log</field>
+        <field name="arch" type="xml">
+            <form create="0" edit="0">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="config_id"/>
+                            <field name="date"/>
+                            <field name="is_simulation"/>
+                            <field name="percent"/>
+                        </group>
+                        <group>
+                            <field name="total_day"/>
+                            <field name="target_amount"/>
+                            <field name="already_invoiced"/>
+                            <field name="invoiced_amount"/>
+                            <field name="order_count"/>
+                            <field name="secondary_invoiced_amount"/>
+                            <field name="secondary_order_count"/>
+                        </group>
+                    </group>
+                    <group string="Verificación AFIP" invisible="not afip_message and not afip_blocked">
+                        <field name="afip_blocked" widget="boolean_toggle"/>
+                        <field name="afip_message" nolabel="1" colspan="2"/>
+                    </group>
+                    <group string="Pedidos seleccionados">
+                        <field name="selected_orders" nolabel="1"/>
+                    </group>
+                    <group string="Pedidos seleccionados (diario del resto)">
+                        <field name="secondary_selected_orders" nolabel="1"/>
+                    </group>
+                    <group string="Errores" invisible="error_count == 0">
+                        <field name="error_count"/>
+                        <field name="error_text" nolabel="1" colspan="2"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_pos_auto_invoice_log" model="ir.actions.act_window">
+        <field name="name">Facturación Automática (Logs)</field>
+        <field name="res_model">pos.auto.invoice.log</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'group_by': 'config_id'}</field>
+    </record>
+
+    <menuitem id="menu_pos_auto_invoice_log"
+        name="Facturación Automática (Logs)"
+        parent="point_of_sale.menu_point_config_product"
+        action="action_pos_auto_invoice_log"
+        sequence="50"/>
+</odoo>
