@@ -33,9 +33,24 @@ class PosOrder(models.Model):
         for config in configs:
             try:
                 self._auto_invoice_for_config(config, dry_run=False)
-            except Exception:
+            except Exception as exc:
                 _logger.exception(
                     'POS auto invoice: fallo al procesar la configuración %s', config.name)
+                # Registrar el fallo en el menú de Logs para que sea visible
+                # en la interfaz y no quede solo en el log del servidor.
+                try:
+                    with self.env.cr.savepoint():
+                        self.env['pos.auto.invoice.log'].create({
+                            'name': '%s - %s (error)' % (
+                                config.name, fields.Date.today().strftime('%d/%m/%Y')),
+                            'config_id': config.id,
+                            'date': fields.Date.today(),
+                            'error_count': 1,
+                            'error_text': '%s: %s' % (type(exc).__name__, exc),
+                        })
+                except Exception:
+                    _logger.exception(
+                        'POS auto invoice: no se pudo registrar el log de error')
 
     @api.model
     def _get_auto_invoice_day_bounds(self, config):
@@ -61,13 +76,14 @@ class PosOrder(models.Model):
         """Devuelve (ok, mensaje). Compara la última factura posteada en Odoo
         contra el último número autorizado en AFIP para detectar desfasajes
         antes de facturar (y no agrandarlos)."""
+        # l10n_latam_document_number es computado no almacenado: no se puede
+        # usar en el dominio, se filtra en Python.
         last_move = self.env['account.move'].search([
             ('journal_id', '=', journal.id),
             ('state', '=', 'posted'),
             ('move_type', '=', 'out_invoice'),
             ('l10n_latam_document_type_id', '!=', False),
-            ('l10n_latam_document_number', '!=', False),
-        ], order='id desc', limit=1)
+        ], order='id desc', limit=10).filtered('l10n_latam_document_number')[:1]
         if not last_move:
             return True, _('Sin facturas previas en el diario: AFIP define la numeración inicial.')
         doc_type = last_move.l10n_latam_document_type_id
