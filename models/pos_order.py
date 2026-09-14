@@ -8,7 +8,6 @@ from odoo import api, fields, models, _
 
 _logger = logging.getLogger(__name__)
 
-MAX_AUTO_INVOICE_ATTEMPTS = 3
 SECONDARY_MAX_FACTOR = 10
 
 
@@ -31,6 +30,8 @@ class PosOrder(models.Model):
     def _cron_auto_invoice(self):
         configs = self.env['pos.config'].search([('auto_invoice_enabled', '=', True)])
         for config in configs:
+            if not config._auto_invoice_is_due():
+                continue
             try:
                 self._auto_invoice_for_config(config, dry_run=False)
             except Exception as exc:
@@ -38,26 +39,35 @@ class PosOrder(models.Model):
                     'POS auto invoice: fallo al procesar la configuración %s', config.name)
                 # Registrar el fallo en el menú de Logs para que sea visible
                 # en la interfaz y no quede solo en el log del servidor.
+                # La transacción puede estar rota (errores crudos de AFIP),
+                # así que se limpia antes de intentar escribir el log.
+                self.env.cr.rollback()
                 try:
-                    with self.env.cr.savepoint():
-                        self.env['pos.auto.invoice.log'].create({
-                            'name': '%s - %s (error)' % (
-                                config.name, fields.Date.today().strftime('%d/%m/%Y')),
-                            'config_id': config.id,
-                            'date': fields.Date.today(),
-                            'error_count': 1,
-                            'error_text': '%s: %s' % (type(exc).__name__, exc),
-                        })
+                    self.env['pos.auto.invoice.log'].create({
+                        'name': '%s - %s (error)' % (
+                            config.name, fields.Date.today().strftime('%d/%m/%Y')),
+                        'config_id': config.id,
+                        'date': fields.Date.today(),
+                        'error_count': 1,
+                        'error_text': '%s: %s' % (type(exc).__name__, exc),
+                    })
+                    self.env.cr.commit()
                 except Exception:
+                    self.env.cr.rollback()
                     _logger.exception(
                         'POS auto invoice: no se pudo registrar el log de error')
 
     @api.model
     def _get_auto_invoice_day_bounds(self, config):
-        tz_name = self.env.user.tz or config.company_id.partner_id.tz or 'UTC'
+        # El cron corre como root (sin tz propia habitualmente), por eso la
+        # referencia es la compañía del punto de venta y no el usuario: define
+        # qué pedidos entran en "el día" y no debe depender de quién ejecute.
+        tz_name = config.company_id.partner_id.tz or self.env.user.tz or 'UTC'
         try:
             tz = ZoneInfo(tz_name)
         except Exception:
+            _logger.warning(
+                'POS auto invoice: timezone inválida %r, se usa UTC', tz_name)
             tz = ZoneInfo('UTC')
         today = datetime.now(tz).date()
         utc = ZoneInfo('UTC')
@@ -73,37 +83,78 @@ class PosOrder(models.Model):
 
     @api.model
     def _auto_invoice_check_afip_numbering(self, journal):
-        """Devuelve (ok, mensaje). Compara la última factura posteada en Odoo
-        contra el último número autorizado en AFIP para detectar desfasajes
-        antes de facturar (y no agrandarlos)."""
+        """Devuelve (ok, mensaje). Compara, POR CADA TIPO DE DOCUMENTO que el
+        diario viene usando, la última factura posteada en Odoo contra el
+        último número autorizado en AFIP.
+
+        La numeración de AFIP es por punto de venta Y tipo de comprobante: un
+        diario que emite Factura A y Factura B lleva dos contadores
+        independientes, así que verificar solo el último comprobante emitido
+        dejaría el otro tipo sin controlar.
+        """
         # l10n_latam_document_number es computado no almacenado: no se puede
         # usar en el dominio, se filtra en Python.
-        last_move = self.env['account.move'].search([
+        posted = self.env['account.move'].search([
             ('journal_id', '=', journal.id),
             ('state', '=', 'posted'),
             ('move_type', '=', 'out_invoice'),
             ('l10n_latam_document_type_id', '!=', False),
-        ], order='id desc', limit=10).filtered('l10n_latam_document_number')[:1]
-        if not last_move:
+        ], order='id desc')
+        if not posted:
             return True, _('Sin facturas previas en el diario: AFIP define la numeración inicial.')
-        doc_type = last_move.l10n_latam_document_type_id
-        try:
-            last_afip = journal._l10n_ar_get_afip_last_invoice_number(doc_type)
-        except Exception as exc:
+
+        # Último movimiento numerado de cada tipo de documento presente.
+        last_per_type = {}
+        for move in posted:
+            doc_type = move.l10n_latam_document_type_id
+            if doc_type.id in last_per_type:
+                continue
+            if not move.l10n_latam_document_number:
+                continue
+            last_per_type[doc_type.id] = move
+
+        if not last_per_type:
             return False, _(
-                'No se pudo consultar AFIP (%s). Se suspende la ejecución para '
-                'evitar desfasajes de numeración.') % exc
-        parts = last_move._l10n_ar_get_document_number_parts(
-            last_move.l10n_latam_document_number, doc_type.code)
-        last_odoo = int(parts['invoice_number'])
-        if last_afip > last_odoo:
-            return False, _(
-                'Desfasaje detectado: último número autorizado en AFIP = %s, '
-                'último en Odoo = %s (%s, tipo %s). Se suspende la facturación '
-                'automática hasta regularizarlo manualmente.'
-            ) % (last_afip, last_odoo, last_move.name, doc_type.name)
-        return True, _('Numeración OK (AFIP: %s / Odoo: %s, tipo %s).') % (
-            last_afip, last_odoo, doc_type.name)
+                'Hay facturas posteadas en el diario pero ninguna tiene número de '
+                'documento asignado. Se suspende la facturación automática hasta '
+                'revisarlo manualmente.')
+
+        messages = []
+        for move in last_per_type.values():
+            doc_type = move.l10n_latam_document_type_id
+            try:
+                last_afip = journal._l10n_ar_get_afip_last_invoice_number(doc_type)
+            except Exception as exc:
+                return False, _(
+                    'No se pudo consultar AFIP para %(doc)s (%(error)s). Se suspende '
+                    'la ejecución para evitar desfasajes de numeración.',
+                    doc=doc_type.name, error=exc)
+            # El WS devuelve False/0 cuando no hay comprobantes autorizados
+            # (o en modo testing): no hay nada contra qué comparar.
+            if not last_afip:
+                messages.append(_(
+                    '%(doc)s: AFIP no reporta comprobantes previos.', doc=doc_type.name))
+                continue
+            try:
+                parts = move._l10n_ar_get_document_number_parts(
+                    move.l10n_latam_document_number, doc_type.code)
+                last_odoo = int(parts['invoice_number'])
+            except Exception as exc:
+                return False, _(
+                    'No se pudo interpretar el número %(number)s de %(move)s '
+                    '(%(error)s). Se suspende la facturación automática.',
+                    number=move.l10n_latam_document_number, move=move.name, error=exc)
+            if last_afip > last_odoo:
+                return False, _(
+                    'Desfasaje detectado: último número autorizado en AFIP = '
+                    '%(afip)s, último en Odoo = %(odoo)s (%(move)s, tipo %(doc)s). '
+                    'Se suspende la facturación automática hasta regularizarlo '
+                    'manualmente.',
+                    afip=last_afip, odoo=last_odoo, move=move.name, doc=doc_type.name)
+            messages.append(_(
+                '%(doc)s OK (AFIP: %(afip)s / Odoo: %(odoo)s).',
+                doc=doc_type.name, afip=last_afip, odoo=last_odoo))
+        return True, ' | '.join(messages)
 
     @api.model
     def _auto_invoice_one(self, order, config, journal):
@@ -117,7 +168,8 @@ class PosOrder(models.Model):
     @api.model
     def _auto_invoice_mark_error(self, order, exc, transaction_broken):
         """Registra el intento fallido en el pedido. Si la transacción quedó
-        rota (errores crudos de red de AFIP), la limpia antes de escribir."""
+        rota (errores crudos de red de AFIP), la limpia antes de escribir y
+        commitea para no perder el contador de intentos."""
         if transaction_broken:
             self.env.cr.rollback()
             order = self.browse(order.id)
@@ -156,16 +208,16 @@ class PosOrder(models.Model):
           diario secundario (sin conexión AFIP).
 
         Si la verificación AFIP falla (servicio caído o desfasaje de
-        numeración) no se factura nada en ninguna fase: los pedidos quedan
-        como recibo y se reintenta en la próxima corrida, preservando la
-        proporción del porcentaje.
+        numeración) la fase 1 no se ejecuta. La fase 2 depende de
+        auto_invoice_secondary_on_afip_block: el diario secundario no toca
+        AFIP, así que puede seguir facturando, pero por defecto se frena para
+        conservar pedidos con los que cumplir el % en la próxima corrida.
 
-        Protecciones AFIP (fase 1): pre-check de numeración, commit por
-        factura, freno de la corrida al primer error.
+        Protecciones AFIP (fase 1): pre-check de numeración por tipo de
+        documento, commit por factura, freno de la corrida al primer error.
 
         Retorna el registro de log creado.
         """
-        Log = self.env['pos.auto.invoice.log']
         currency = config.currency_id
         rounding = currency.rounding or 0.01
         today, day_start, day_end = self._get_auto_invoice_day_bounds(config)
@@ -173,6 +225,7 @@ class PosOrder(models.Model):
         afip_journal = config.auto_invoice_journal_id or config.invoice_journal_id
         secondary_journal = config.auto_invoice_secondary_journal_id
         is_afip_ws = self._is_afip_ws_journal(afip_journal)
+        max_attempts = max(1, config.auto_invoice_max_attempts or 3)
 
         afip_message = ''
         afip_blocked = False
@@ -197,24 +250,32 @@ class PosOrder(models.Model):
 
         pending = day_orders.filtered(
             lambda o: o.state == 'paid' and not o.account_move and o.amount_total > 0)
-        candidates = list(pending.filtered(
-            lambda o: o.auto_invoice_attempts < MAX_AUTO_INVOICE_ATTEMPTS))
-        skipped_retries = pending - self.browse([o.id for o in candidates])
-        random.shuffle(candidates)
+        skipped_retries = pending.filtered(
+            lambda o: o.auto_invoice_attempts >= max_attempts)
+        candidates = list(pending - skipped_retries)
+        # Semilla estable por config/día/avance: la selección sigue siendo
+        # impredecible desde afuera, pero una simulación y la corrida real que
+        # la sigue eligen los mismos pedidos, que es lo que hace útil al botón
+        # "Simular".
+        random.Random(
+            '%s-%s-%s-%s' % (config.id, today.isoformat(), len(pending), afip_done)
+        ).shuffle(candidates)
 
         max_per_run = max(1, config.auto_invoice_max_per_run or 10)
+        run_secondary = bool(secondary_journal) and (
+            not afip_blocked or config.auto_invoice_secondary_on_afip_block)
         afip_selected = []
         afip_would_amount = 0.0
         secondary_selected = []
         secondary_would_amount = 0.0
-        if not afip_blocked:
-            if afip_remaining > rounding:
-                afip_selected, afip_would_amount = self._auto_invoice_greedy_select(
-                    candidates, afip_remaining, max_per_run, rounding)
-            if secondary_journal:
-                rest = [o for o in candidates if o not in afip_selected]
-                secondary_selected, secondary_would_amount = self._auto_invoice_greedy_select(
-                    rest, None, max_per_run * SECONDARY_MAX_FACTOR, rounding)
+        if not afip_blocked and afip_remaining > rounding:
+            afip_selected, afip_would_amount = self._auto_invoice_greedy_select(
+                candidates, afip_remaining, max_per_run, rounding)
+        if run_secondary:
+            afip_selected_ids = {o.id for o in afip_selected}
+            rest = [o for o in candidates if o.id not in afip_selected_ids]
+            secondary_selected, secondary_would_amount = self._auto_invoice_greedy_select(
+                rest, None, max_per_run * SECONDARY_MAX_FACTOR, rounding)
 
         errors = []
         afip_amount = 0.0
@@ -223,7 +284,7 @@ class PosOrder(models.Model):
         secondary_amount = 0.0
         secondary_count = 0
 
-        if not dry_run and not afip_blocked:
+        if not dry_run:
             if afip_selected and not afip_journal:
                 errors.append(_(
                     'No hay diario de facturación configurado para %s.', config.name))
@@ -270,10 +331,10 @@ class PosOrder(models.Model):
         if skipped_retries:
             errors.insert(0, _(
                 'Pedidos que superaron %s intentos y requieren revisión manual: %s'
-            ) % (MAX_AUTO_INVOICE_ATTEMPTS, ', '.join(
-                skipped_retries.mapped('pos_reference'))))
+            ) % (max_attempts, ', '.join(
+                o.pos_reference or o.name for o in skipped_retries)))
 
-        return Log.create({
+        log_vals = {
             'name': '%s - %s%s' % (
                 config.name,
                 today.strftime('%d/%m/%Y'),
@@ -285,6 +346,7 @@ class PosOrder(models.Model):
             'percent': config.auto_invoice_percent,
             'target_amount': target,
             'already_invoiced': already_invoiced,
+            'afip_already_invoiced': afip_done,
             'invoiced_amount': afip_would_amount if dry_run else afip_amount,
             'order_count': len(afip_selected) if dry_run else afip_count,
             'secondary_invoiced_amount': (
@@ -299,4 +361,12 @@ class PosOrder(models.Model):
                 o.pos_reference or o.name for o in secondary_selected),
             'afip_message': afip_message,
             'afip_blocked': afip_blocked,
-        })
+        }
+        log = self.env['pos.auto.invoice.log'].create(log_vals)
+        if not dry_run:
+            # Las facturas AFIP se commitean una por una; el log es el único
+            # registro de cuánto se facturó, así que se persiste con la misma
+            # disciplina en vez de depender del commit implícito del cron.
+            config._auto_invoice_touch_last_run()
+            self.env.cr.commit()
+        return log

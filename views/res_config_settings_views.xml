@@ -33,6 +33,12 @@
                                         options="{'no_create': True, 'no_open': True}"/>
                                 </div>
                             </div>
+                            <div class="row mt16" invisible="not pos_auto_invoice_secondary_journal_id">
+                                <label string="Facturar el resto si AFIP falla" for="pos_auto_invoice_secondary_on_afip_block" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_secondary_on_afip_block"/>
+                                </div>
+                            </div>
                             <div class="row mt16">
                                 <label string="Cliente Consumidor Final" for="pos_auto_invoice_partner_id" class="col-lg-3 o_light_label"/>
                                 <div class="col-lg-6">
@@ -49,6 +55,12 @@
                                 <label string="Máx. facturas por ejecución" for="pos_auto_invoice_max_per_run" class="col-lg-3 o_light_label"/>
                                 <div class="col-lg-6">
                                     <field name="pos_auto_invoice_max_per_run" required="pos_auto_invoice_enabled"/>
+                                </div>
+                            </div>
+                            <div class="row mt16">
+                                <label string="Intentos por pedido" for="pos_auto_invoice_max_attempts" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_max_attempts" required="pos_auto_invoice_enabled"/>
                                 </div>
                             </div>
                             <div class="mt8">

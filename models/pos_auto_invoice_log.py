@@ -15,7 +15,13 @@ class PosAutoInvoiceLog(models.Model):
     total_day = fields.Monetary(string='Total vendido del día', readonly=True)
     percent = fields.Float(string='% objetivo', readonly=True)
     target_amount = fields.Monetary(string='Monto objetivo', readonly=True)
-    already_invoiced = fields.Monetary(string='Ya facturado (manual + automático)', readonly=True)
+    already_invoiced = fields.Monetary(
+        string='Ya facturado del día (todos los diarios)', readonly=True,
+        help='Total del día que ya tenía factura al iniciar la corrida, sin importar el diario.')
+    afip_already_invoiced = fields.Monetary(
+        string='Ya facturado en el diario AFIP', readonly=True,
+        help='Parte del total del día ya facturada en el diario del porcentaje. '
+             'Es el número que se descuenta del monto objetivo.')
     invoiced_amount = fields.Monetary(string='Facturado en esta ejecución', readonly=True)
     order_count = fields.Integer(string='Pedidos facturados', readonly=True)
     secondary_invoiced_amount = fields.Monetary(

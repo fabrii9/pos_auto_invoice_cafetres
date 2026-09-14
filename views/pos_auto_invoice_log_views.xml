@@ -13,6 +13,7 @@
                 <field name="percent"/>
                 <field name="target_amount"/>
                 <field name="already_invoiced"/>
+                <field name="afip_already_invoiced"/>
                 <field name="invoiced_amount"/>
                 <field name="secondary_invoiced_amount"/>
                 <field name="order_count"/>
@@ -35,12 +36,13 @@
                             <field name="config_id"/>
                             <field name="date"/>
                             <field name="is_simulation"/>
-                            <field name="percent"/>
+                                        <field name="percent"/>
                         </group>
                         <group>
                             <field name="total_day"/>
                             <field name="target_amount"/>
                             <field name="already_invoiced"/>
+                            <field name="afip_already_invoiced"/>
                             <field name="invoiced_amount"/>
                             <field name="order_count"/>
                             <field name="secondary_invoiced_amount"/>

@@ -13,12 +13,16 @@ class ResConfigSettings(models.TransientModel):
         related='pos_config_id.auto_invoice_journal_id', readonly=False)
     pos_auto_invoice_secondary_journal_id = fields.Many2one(
         related='pos_config_id.auto_invoice_secondary_journal_id', readonly=False)
+    pos_auto_invoice_secondary_on_afip_block = fields.Boolean(
+        related='pos_config_id.auto_invoice_secondary_on_afip_block', readonly=False)
     pos_auto_invoice_partner_id = fields.Many2one(
         related='pos_config_id.auto_invoice_partner_id', readonly=False)
     pos_auto_invoice_frequency = fields.Integer(
         related='pos_config_id.auto_invoice_frequency', readonly=False)
     pos_auto_invoice_max_per_run = fields.Integer(
         related='pos_config_id.auto_invoice_max_per_run', readonly=False)
+    pos_auto_invoice_max_attempts = fields.Integer(
+        related='pos_config_id.auto_invoice_max_attempts', readonly=False)
 
     def action_pos_auto_invoice_simulate(self):
         self.ensure_one()

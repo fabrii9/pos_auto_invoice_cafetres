@@ -1,12 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo noupdate="1">
+    <!-- Corre cada hora y cada punto de venta decide si le toca según su
+         propia frecuencia (_auto_invoice_is_due). Antes el intervalo del cron
+         se reescribía desde cada pos.config, así que el último POS guardado
+         pisaba la cadencia de todos los demás. -->
     <record id="ir_cron_pos_auto_invoice" model="ir.cron">
         <field name="name">POS: Facturación automática de recibos</field>
         <field name="model_id" ref="point_of_sale.model_pos_order"/>
         <field name="state">code</field>
         <field name="code">model._cron_auto_invoice()</field>
         <field name="user_id" ref="base.user_root"/>
-        <field name="interval_number">12</field>
+        <field name="interval_number">1</field>
         <field name="interval_type">hours</field>
         <field name="active" eval="True"/>
     </record>
