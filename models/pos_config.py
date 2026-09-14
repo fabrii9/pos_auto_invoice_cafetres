@@ -10,6 +10,16 @@ class PosConfig(models.Model):
         string='Facturación automática',
         help='Factura automáticamente un porcentaje de las ventas del día '
              '(pedidos que quedaron como recibo) a Consumidor Final.')
+    auto_invoice_mode = fields.Selection(
+        [('percent', 'Por porcentaje fijo'),
+         ('payment_method', 'Por método de pago')],
+        string='Modalidad', default='percent', required=True,
+        help='Por porcentaje fijo: factura al azar pedidos hasta cubrir el '
+             'porcentaje configurado del total del día en el diario AFIP, y el '
+             'resto en el diario secundario.\n'
+             'Por método de pago: el diario lo define cómo pagó el cliente, sin '
+             'porcentaje ni azar. Un pedido pagado con un método asignado al '
+             'diario AFIP se factura ahí; el resto va al diario secundario.')
     auto_invoice_percent = fields.Float(
         string='Porcentaje a facturar (%)', default=0.0,
         help='Porcentaje del total vendido en el día que debe quedar facturado. '
@@ -25,6 +35,22 @@ class PosConfig(models.Model):
         help='Diario SIN conexión a AFIP donde se factura el resto de las ventas '
              'del día (lo que excede el porcentaje). Si está vacío, el resto '
              'queda como recibo.')
+    auto_invoice_afip_payment_method_ids = fields.Many2many(
+        'pos.payment.method', 'pos_auto_invoice_afip_pm_rel', 'config_id', 'method_id',
+        string='Métodos de pago del diario AFIP',
+        help='Pedidos pagados con alguno de estos métodos se facturan en el '
+             'diario AFIP. Solo se usa en la modalidad "Por método de pago".')
+    auto_invoice_secondary_payment_method_ids = fields.Many2many(
+        'pos.payment.method', 'pos_auto_invoice_secondary_pm_rel', 'config_id', 'method_id',
+        string='Métodos de pago del diario secundario',
+        help='Pedidos pagados con alguno de estos métodos se facturan en el '
+             'diario secundario (sin AFIP). Solo se usa en la modalidad '
+             '"Por método de pago".')
+    auto_invoice_unmapped_to_secondary = fields.Boolean(
+        string='Métodos sin asignar van al diario secundario', default=False,
+        help='Qué hacer con un pedido cuyo método de pago no está en ninguna de '
+             'las dos listas. Por defecto queda como recibo, sin facturar; '
+             'activalo para mandarlo al diario secundario.')
     auto_invoice_secondary_on_afip_block = fields.Boolean(
         string='Facturar el resto aunque AFIP falle', default=False,
         help='Si AFIP está caído o hay un desfasaje de numeración, el porcentaje '
@@ -85,6 +111,27 @@ class PosConfig(models.Model):
                 raise ValidationError(_(
                     'El diario para el resto de las ventas no puede ser el mismo '
                     'que el diario del porcentaje (%s).', secondary.name))
+
+    @api.constrains(
+        'auto_invoice_mode',
+        'auto_invoice_afip_payment_method_ids',
+        'auto_invoice_secondary_payment_method_ids')
+    def _check_payment_method_mapping(self):
+        for config in self:
+            if config.auto_invoice_mode != 'payment_method':
+                continue
+            overlap = (config.auto_invoice_afip_payment_method_ids
+                       & config.auto_invoice_secondary_payment_method_ids)
+            if overlap:
+                raise ValidationError(_(
+                    'Un método de pago no puede facturarse en los dos diarios a '
+                    'la vez: %s', ', '.join(overlap.mapped('name'))))
+            if config.auto_invoice_enabled and not (
+                    config.auto_invoice_afip_payment_method_ids
+                    or config.auto_invoice_secondary_payment_method_ids):
+                raise ValidationError(_(
+                    'En la modalidad "Por método de pago" hay que asignar al '
+                    'menos un método de pago a alguno de los dos diarios.'))
 
     def _auto_invoice_is_due(self):
         """True si pasó el intervalo que corresponde a la frecuencia de este

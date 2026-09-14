@@ -7,12 +7,20 @@ class ResConfigSettings(models.TransientModel):
 
     pos_auto_invoice_enabled = fields.Boolean(
         related='pos_config_id.auto_invoice_enabled', readonly=False)
+    pos_auto_invoice_mode = fields.Selection(
+        related='pos_config_id.auto_invoice_mode', readonly=False)
     pos_auto_invoice_percent = fields.Float(
         related='pos_config_id.auto_invoice_percent', readonly=False)
     pos_auto_invoice_journal_id = fields.Many2one(
         related='pos_config_id.auto_invoice_journal_id', readonly=False)
     pos_auto_invoice_secondary_journal_id = fields.Many2one(
         related='pos_config_id.auto_invoice_secondary_journal_id', readonly=False)
+    pos_auto_invoice_afip_payment_method_ids = fields.Many2many(
+        related='pos_config_id.auto_invoice_afip_payment_method_ids', readonly=False)
+    pos_auto_invoice_secondary_payment_method_ids = fields.Many2many(
+        related='pos_config_id.auto_invoice_secondary_payment_method_ids', readonly=False)
+    pos_auto_invoice_unmapped_to_secondary = fields.Boolean(
+        related='pos_config_id.auto_invoice_unmapped_to_secondary', readonly=False)
     pos_auto_invoice_secondary_on_afip_block = fields.Boolean(
         related='pos_config_id.auto_invoice_secondary_on_afip_block', readonly=False)
     pos_auto_invoice_partner_id = fields.Many2one(

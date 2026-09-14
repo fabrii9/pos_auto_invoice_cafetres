@@ -9,6 +9,7 @@
                 <field name="config_id"/>
                 <field name="date"/>
                 <field name="is_simulation"/>
+                <field name="mode"/>
                 <field name="total_day"/>
                 <field name="percent"/>
                 <field name="target_amount"/>
@@ -36,11 +37,12 @@
                             <field name="config_id"/>
                             <field name="date"/>
                             <field name="is_simulation"/>
-                                        <field name="percent"/>
+                            <field name="mode"/>
+                            <field name="percent" invisible="mode != 'percent'"/>
                         </group>
                         <group>
                             <field name="total_day"/>
-                            <field name="target_amount"/>
+                            <field name="target_amount" invisible="mode != 'percent'"/>
                             <field name="already_invoiced"/>
                             <field name="afip_already_invoiced"/>
                             <field name="invoiced_amount"/>

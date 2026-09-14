@@ -12,9 +12,26 @@
                         <field name="pos_auto_invoice_enabled"/>
                         <div class="content-group" invisible="not pos_auto_invoice_enabled">
                             <div class="row mt16">
+                                <label string="Modalidad" for="pos_auto_invoice_mode" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-9">
+                                    <field name="pos_auto_invoice_mode" widget="radio" required="pos_auto_invoice_enabled"/>
+                                    <div class="text-muted small" invisible="pos_auto_invoice_mode != 'percent'">
+                                        Se factura al azar una parte de los pedidos del día en el diario AFIP hasta
+                                        cubrir el porcentaje configurado del total vendido (descontando lo ya facturado
+                                        a mano desde el POS). El resto va al diario secundario.
+                                    </div>
+                                    <div class="text-muted small" invisible="pos_auto_invoice_mode != 'payment_method'">
+                                        El diario lo define cómo pagó el cliente: no hay porcentaje ni azar.
+                                        Si un pedido combina métodos de los dos diarios, se factura en el del
+                                        método que aportó más monto.
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mt16" invisible="pos_auto_invoice_mode != 'percent'">
                                 <label string="Porcentaje del día" for="pos_auto_invoice_percent" class="col-lg-3 o_light_label"/>
                                 <div class="col-lg-6">
-                                    <field name="pos_auto_invoice_percent" required="pos_auto_invoice_enabled"/>
+                                    <field name="pos_auto_invoice_percent"
+                                        required="pos_auto_invoice_enabled and pos_auto_invoice_mode == 'percent'"/>
                                 </div>
                             </div>
                             <div class="row mt16">
@@ -25,12 +42,34 @@
                                         options="{'no_create': True, 'no_open': True}"/>
                                 </div>
                             </div>
+                            <div class="row mt16" invisible="pos_auto_invoice_mode != 'payment_method'">
+                                <label string="Métodos de pago (diario AFIP)" for="pos_auto_invoice_afip_payment_method_ids" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-9">
+                                    <field name="pos_auto_invoice_afip_payment_method_ids"
+                                        widget="many2many_tags"
+                                        options="{'no_create': True}"/>
+                                </div>
+                            </div>
                             <div class="row mt16">
                                 <label string="Diario para el resto" for="pos_auto_invoice_secondary_journal_id" class="col-lg-3 o_light_label"/>
                                 <div class="col-lg-6">
                                     <field name="pos_auto_invoice_secondary_journal_id"
                                         domain="[('type', '=', 'sale')]"
                                         options="{'no_create': True, 'no_open': True}"/>
+                                </div>
+                            </div>
+                            <div class="row mt16" invisible="pos_auto_invoice_mode != 'payment_method'">
+                                <label string="Métodos de pago (diario del resto)" for="pos_auto_invoice_secondary_payment_method_ids" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-9">
+                                    <field name="pos_auto_invoice_secondary_payment_method_ids"
+                                        widget="many2many_tags"
+                                        options="{'no_create': True}"/>
+                                </div>
+                            </div>
+                            <div class="row mt16" invisible="pos_auto_invoice_mode != 'payment_method'">
+                                <label string="Métodos sin asignar al diario del resto" for="pos_auto_invoice_unmapped_to_secondary" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_unmapped_to_secondary"/>
                                 </div>
                             </div>
                             <div class="row mt16" invisible="not pos_auto_invoice_secondary_journal_id">

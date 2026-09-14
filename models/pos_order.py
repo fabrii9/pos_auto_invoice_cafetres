@@ -183,6 +183,48 @@ class PosOrder(models.Model):
             self.env.cr.commit()
 
     @api.model
+    def _auto_invoice_payment_methods(self, order):
+        """Métodos de pago con los que se cobró realmente el pedido.
+
+        Los pagos marcados is_change son el vuelto (un movimiento negativo en
+        efectivo), no una forma de cobro: incluirlos mandaría al diario de
+        "efectivo" cualquier pedido pagado con tarjeta que haya recibido
+        vuelto.
+        """
+        return order.payment_ids.filtered(
+            lambda p: not p.is_change).payment_method_id
+
+    @api.model
+    def _auto_invoice_split_by_payment_method(self, candidates, config):
+        """Reparte los pedidos entre los dos diarios según cómo se pagaron.
+
+        Devuelve (afip, secundario, sin_asignar). Un pedido con pagos mixtos
+        (parte tarjeta AFIP, parte efectivo) se resuelve por el método que más
+        monto aportó: es determinista y respeta la intención de la
+        configuración sin partir la factura en dos.
+        """
+        afip_methods = config.auto_invoice_afip_payment_method_ids
+        secondary_methods = config.auto_invoice_secondary_payment_method_ids
+        afip, secondary, unmapped = [], [], []
+        for order in candidates:
+            totals = {'afip': 0.0, 'secondary': 0.0}
+            for payment in order.payment_ids:
+                if payment.is_change:
+                    continue
+                method = payment.payment_method_id
+                if method in afip_methods:
+                    totals['afip'] += payment.amount
+                elif method in secondary_methods:
+                    totals['secondary'] += payment.amount
+            if totals['afip'] <= 0.0 and totals['secondary'] <= 0.0:
+                unmapped.append(order)
+            elif totals['afip'] >= totals['secondary']:
+                afip.append(order)
+            else:
+                secondary.append(order)
+        return afip, secondary, unmapped
+
+    @api.model
     def _auto_invoice_greedy_select(self, candidates, amount_limit, count_limit, rounding):
         """Selección aleatoria greedy: factura pedidos hasta llegar a
         amount_limit sin superarlo, con tope de cantidad."""
@@ -245,8 +287,14 @@ class PosOrder(models.Model):
         afip_done = sum(day_orders.filtered(
             lambda o: o.account_move and o.account_move.journal_id == afip_journal
         ).mapped('amount_total'))
-        target = total_day * (config.auto_invoice_percent or 0.0) / 100.0
-        afip_remaining = target - afip_done
+        if config.auto_invoice_mode == 'payment_method':
+            # Sin porcentaje: el log guarda 0 como objetivo para no sugerir
+            # una meta que esta modalidad no persigue.
+            target = 0.0
+            afip_remaining = 0.0
+        else:
+            target = total_day * (config.auto_invoice_percent or 0.0) / 100.0
+            afip_remaining = target - afip_done
 
         pending = day_orders.filtered(
             lambda o: o.state == 'paid' and not o.account_move and o.amount_total > 0)
@@ -264,18 +312,37 @@ class PosOrder(models.Model):
         max_per_run = max(1, config.auto_invoice_max_per_run or 10)
         run_secondary = bool(secondary_journal) and (
             not afip_blocked or config.auto_invoice_secondary_on_afip_block)
+        by_payment_method = config.auto_invoice_mode == 'payment_method'
         afip_selected = []
         afip_would_amount = 0.0
         secondary_selected = []
         secondary_would_amount = 0.0
-        if not afip_blocked and afip_remaining > rounding:
-            afip_selected, afip_would_amount = self._auto_invoice_greedy_select(
-                candidates, afip_remaining, max_per_run, rounding)
-        if run_secondary:
-            afip_selected_ids = {o.id for o in afip_selected}
-            rest = [o for o in candidates if o.id not in afip_selected_ids]
-            secondary_selected, secondary_would_amount = self._auto_invoice_greedy_select(
-                rest, None, max_per_run * SECONDARY_MAX_FACTOR, rounding)
+        unmapped_orders = []
+
+        if by_payment_method:
+            # El diario lo define el método de pago: no hay porcentaje ni
+            # monto objetivo, solo el tope de facturas por corrida.
+            afip_candidates, secondary_candidates, unmapped_orders = (
+                self._auto_invoice_split_by_payment_method(candidates, config))
+            if config.auto_invoice_unmapped_to_secondary:
+                secondary_candidates = secondary_candidates + unmapped_orders
+                unmapped_orders = []
+            if not afip_blocked:
+                afip_selected, afip_would_amount = self._auto_invoice_greedy_select(
+                    afip_candidates, None, max_per_run, rounding)
+            if run_secondary:
+                secondary_selected, secondary_would_amount = self._auto_invoice_greedy_select(
+                    secondary_candidates, None,
+                    max_per_run * SECONDARY_MAX_FACTOR, rounding)
+        else:
+            if not afip_blocked and afip_remaining > rounding:
+                afip_selected, afip_would_amount = self._auto_invoice_greedy_select(
+                    candidates, afip_remaining, max_per_run, rounding)
+            if run_secondary:
+                afip_selected_ids = {o.id for o in afip_selected}
+                rest = [o for o in candidates if o.id not in afip_selected_ids]
+                secondary_selected, secondary_would_amount = self._auto_invoice_greedy_select(
+                    rest, None, max_per_run * SECONDARY_MAX_FACTOR, rounding)
 
         errors = []
         afip_amount = 0.0
@@ -328,6 +395,13 @@ class PosOrder(models.Model):
                         self._auto_invoice_mark_error(
                             order, exc, transaction_broken=False)
 
+        if unmapped_orders:
+            errors.insert(0, _(
+                'Pedidos cuyo método de pago no está asignado a ningún diario '
+                '(quedan como recibo): %s'
+            ) % ', '.join(
+                o.pos_reference or o.name for o in unmapped_orders))
+
         if skipped_retries:
             errors.insert(0, _(
                 'Pedidos que superaron %s intentos y requieren revisión manual: %s'
@@ -343,6 +417,7 @@ class PosOrder(models.Model):
             'date': today,
             'is_simulation': dry_run,
             'total_day': total_day,
+            'mode': config.auto_invoice_mode,
             'percent': config.auto_invoice_percent,
             'target_amount': target,
             'already_invoiced': already_invoiced,

@@ -12,6 +12,10 @@ class PosAutoInvoiceLog(models.Model):
         'pos.config', string='Punto de venta', readonly=True, ondelete='cascade')
     date = fields.Date(string='Fecha', readonly=True)
     is_simulation = fields.Boolean(string='Simulación', readonly=True)
+    mode = fields.Selection(
+        [('percent', 'Por porcentaje fijo'),
+         ('payment_method', 'Por método de pago')],
+        string='Modalidad', readonly=True)
     total_day = fields.Monetary(string='Total vendido del día', readonly=True)
     percent = fields.Float(string='% objetivo', readonly=True)
     target_amount = fields.Monetary(string='Monto objetivo', readonly=True)

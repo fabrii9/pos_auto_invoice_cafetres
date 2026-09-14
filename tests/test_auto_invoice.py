@@ -240,3 +240,125 @@ class TestPosAutoInvoiceConstraints(TestPoSCommon):
         self.config.auto_invoice_journal_id = journal
         with self.assertRaises(ValidationError):
             self.config.auto_invoice_secondary_journal_id = journal
+
+
+@tagged('post_install', '-at_install')
+class TestPosAutoInvoiceByPaymentMethod(TestPoSCommon):
+    """Modalidad 'Por método de pago': el diario lo define cómo se pagó."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.PosOrder = cls.env['pos.order']
+        cls.config = cls.basic_config
+        cls.method_afip = cls.env['pos.payment.method'].create({
+            'name': 'Tarjeta (AFIP)',
+            'company_id': cls.env.company.id,
+        })
+        cls.method_secondary = cls.env['pos.payment.method'].create({
+            'name': 'Efectivo (interno)',
+            'company_id': cls.env.company.id,
+        })
+        cls.method_unmapped = cls.env['pos.payment.method'].create({
+            'name': 'Sin asignar',
+            'company_id': cls.env.company.id,
+        })
+        cls.config.write({
+            'auto_invoice_mode': 'payment_method',
+            'auto_invoice_afip_payment_method_ids': [(6, 0, cls.method_afip.ids)],
+            'auto_invoice_secondary_payment_method_ids': [
+                (6, 0, cls.method_secondary.ids)],
+        })
+
+    class _FakePayment:
+        def __init__(self, method, amount, is_change=False):
+            self.payment_method_id = method
+            self.amount = amount
+            self.is_change = is_change
+
+    class _FakeOrder:
+        def __init__(self, payments, ref='REF'):
+            self.payment_ids = payments
+            self.pos_reference = ref
+            self.name = ref
+            self.amount_total = sum(
+                p.amount for p in payments if not p.is_change)
+
+    def _order(self, *payments, ref='REF'):
+        return self._FakeOrder(list(payments), ref)
+
+    def _split(self, orders):
+        return self.PosOrder._auto_invoice_split_by_payment_method(
+            orders, self.config)
+
+    def test_routes_by_payment_method(self):
+        afip_order = self._order(
+            self._FakePayment(self.method_afip, 100.0), ref='A')
+        sec_order = self._order(
+            self._FakePayment(self.method_secondary, 80.0), ref='B')
+        afip, secondary, unmapped = self._split([afip_order, sec_order])
+        self.assertEqual([o.pos_reference for o in afip], ['A'])
+        self.assertEqual([o.pos_reference for o in secondary], ['B'])
+        self.assertFalse(unmapped)
+
+    def test_unmapped_method_is_left_alone(self):
+        """Sin asignar no se factura: queda como recibo, no se adivina."""
+        order = self._order(
+            self._FakePayment(self.method_unmapped, 50.0), ref='C')
+        afip, secondary, unmapped = self._split([order])
+        self.assertFalse(afip)
+        self.assertFalse(secondary)
+        self.assertEqual([o.pos_reference for o in unmapped], ['C'])
+
+    def test_mixed_payment_goes_to_larger_amount(self):
+        """Pago mixto: gana el método que aportó más monto."""
+        order = self._order(
+            self._FakePayment(self.method_afip, 30.0),
+            self._FakePayment(self.method_secondary, 70.0), ref='D')
+        afip, secondary, unmapped = self._split([order])
+        self.assertFalse(afip)
+        self.assertEqual([o.pos_reference for o in secondary], ['D'])
+
+    def test_mixed_payment_tie_prefers_afip(self):
+        """Empate: se factura contra AFIP, que es el criterio conservador."""
+        order = self._order(
+            self._FakePayment(self.method_afip, 50.0),
+            self._FakePayment(self.method_secondary, 50.0), ref='E')
+        afip, secondary, unmapped = self._split([order])
+        self.assertEqual([o.pos_reference for o in afip], ['E'])
+        self.assertFalse(secondary)
+
+    def test_change_payment_is_ignored(self):
+        """El vuelto en efectivo no debe arrastrar el pedido al otro diario."""
+        order = self._order(
+            self._FakePayment(self.method_afip, 100.0),
+            self._FakePayment(self.method_secondary, -20.0, is_change=True),
+            ref='F')
+        afip, secondary, unmapped = self._split([order])
+        self.assertEqual([o.pos_reference for o in afip], ['F'],
+                         'el vuelto no es una forma de cobro')
+        self.assertFalse(secondary)
+
+    def test_partially_mapped_mixed_payment(self):
+        """Un método sin asignar no invalida al que sí lo está."""
+        order = self._order(
+            self._FakePayment(self.method_unmapped, 90.0),
+            self._FakePayment(self.method_afip, 10.0), ref='G')
+        afip, secondary, unmapped = self._split([order])
+        self.assertEqual([o.pos_reference for o in afip], ['G'])
+        self.assertFalse(unmapped)
+
+    def test_method_cannot_be_in_both_journals(self):
+        from odoo.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self.config.auto_invoice_secondary_payment_method_ids = [
+                (6, 0, self.method_afip.ids)]
+
+    def test_mode_switch_keeps_percent_config(self):
+        """Cambiar de modalidad no borra lo configurado en la otra."""
+        self.config.auto_invoice_percent = 30.0
+        self.config.auto_invoice_mode = 'payment_method'
+        self.assertEqual(self.config.auto_invoice_percent, 30.0)
+        self.config.auto_invoice_mode = 'percent'
+        self.assertEqual(
+            self.config.auto_invoice_afip_payment_method_ids, self.method_afip)
