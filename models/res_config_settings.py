@@ -31,6 +31,8 @@ class ResConfigSettings(models.TransientModel):
         related='pos_config_id.auto_invoice_max_per_run', readonly=False)
     pos_auto_invoice_max_attempts = fields.Integer(
         related='pos_config_id.auto_invoice_max_attempts', readonly=False)
+    pos_auto_invoice_catchup_days = fields.Integer(
+        related='pos_config_id.auto_invoice_catchup_days', readonly=False)
 
     def action_pos_auto_invoice_simulate(self):
         self.ensure_one()

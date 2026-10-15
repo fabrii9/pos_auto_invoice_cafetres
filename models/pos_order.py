@@ -43,19 +43,24 @@ class PosOrder(models.Model):
                 # así que se limpia antes de intentar escribir el log.
                 self.env.cr.rollback()
                 try:
-                    self.env['pos.auto.invoice.log'].create({
-                        'name': '%s - %s (error)' % (
-                            config.name, fields.Date.today().strftime('%d/%m/%Y')),
-                        'config_id': config.id,
-                        'date': fields.Date.today(),
-                        'error_count': 1,
-                        'error_text': '%s: %s' % (type(exc).__name__, exc),
-                    })
+                    self._auto_invoice_log_failure(config, exc, trigger='cron')
                     self.env.cr.commit()
                 except Exception:
                     self.env.cr.rollback()
                     _logger.exception(
                         'POS auto invoice: no se pudo registrar el log de error')
+
+    @api.model
+    def _auto_invoice_log_failure(self, config, exc, trigger):
+        return self.env['pos.auto.invoice.log'].sudo().create({
+            'name': '%s - %s (error)' % (
+                config.name, fields.Date.today().strftime('%d/%m/%Y')),
+            'config_id': config.id,
+            'date': fields.Date.today(),
+            'trigger': trigger,
+            'error_count': 1,
+            'error_text': '%s: %s' % (type(exc).__name__, exc),
+        })
 
     @api.model
     def _get_auto_invoice_day_bounds(self, config):
@@ -74,6 +79,37 @@ class PosOrder(models.Model):
         day_start = datetime.combine(today, time.min, tzinfo=tz).astimezone(utc).replace(tzinfo=None)
         day_end = datetime.combine(today, time.max, tzinfo=tz).astimezone(utc).replace(tzinfo=None)
         return today, day_start, day_end
+
+    @api.model
+    def _auto_invoice_is_pending(self, order):
+        """True si el pedido sigue siendo un recibo que hay que facturar.
+
+        Al cerrar la sesión Odoo pasa los pedidos sin factura de 'paid' a
+        'done'; si solo se miraran los 'paid', lo vendido entre la última
+        corrida y el cierre de caja quedaría como recibo para siempre. Un
+        pedido 'done' de una sesión cerrada se puede facturar igual: Odoo
+        genera el asiento de reversión contra el cierre de la sesión.
+        """
+        if order.account_move or order.amount_total <= 0:
+            return False
+        if order.state == 'paid':
+            return True
+        return order.state == 'done' and order.session_id.state == 'closed'
+
+    @api.model
+    def _auto_invoice_catchup_domain(self, config, day_start):
+        """Pedidos de días anteriores que quedaron sin facturar en sesiones
+        ya cerradas, dentro de la ventana de recuperación configurada."""
+        days = max(0, config.auto_invoice_catchup_days or 0)
+        return [
+            ('config_id', '=', config.id),
+            ('state', '=', 'done'),
+            ('account_move', '=', False),
+            ('amount_total', '>', 0),
+            ('session_id.state', '=', 'closed'),
+            ('date_order', '>=', fields.Datetime.subtract(day_start, days=days)),
+            ('date_order', '<', day_start),
+        ]
 
     @api.model
     def _is_afip_ws_journal(self, journal):
@@ -240,7 +276,7 @@ class PosOrder(models.Model):
         return selected, accumulated
 
     @api.model
-    def _auto_invoice_for_config(self, config, dry_run=False):
+    def _auto_invoice_for_config(self, config, dry_run=False, session=None, trigger='cron'):
         """Facturación automática diaria en dos fases:
 
         - Fase 1 (AFIP): factura pedidos-recibo en el diario conectado a AFIP
@@ -257,6 +293,12 @@ class PosOrder(models.Model):
 
         Protecciones AFIP (fase 1): pre-check de numeración por tipo de
         documento, commit por factura, freno de la corrida al primer error.
+
+        Con `session` (cierre de caja) se suman los pedidos de esa sesión
+        aunque sean de otro día y no se aplica el tope por corrida: lo que no
+        se facture ahora pasa a 'done' y solo lo levanta la recuperación.
+        Sin `session` se suman los pedidos de sesiones cerradas de los
+        últimos auto_invoice_catchup_days días que quedaron sin factura.
 
         Retorna el registro de log creado.
         """
@@ -281,6 +323,17 @@ class PosOrder(models.Model):
             ('date_order', '>=', day_start),
             ('date_order', '<=', day_end),
         ])
+        if session:
+            # Un cierre pasada la medianoche deja pedidos del día anterior
+            # fuera de "hoy"; la sesión que cierra los incluye a todos.
+            day_orders |= session.order_ids.filtered(
+                lambda o: o.state in ('paid', 'done'))
+            catchup_orders = self.browse()
+        elif config.auto_invoice_catchup_days:
+            catchup_orders = self.search(
+                self._auto_invoice_catchup_domain(config, day_start))
+        else:
+            catchup_orders = self.browse()
         total_day = sum(day_orders.mapped('amount_total'))
         already_invoiced = sum(
             day_orders.filtered('account_move').mapped('amount_total'))
@@ -296,8 +349,7 @@ class PosOrder(models.Model):
             target = total_day * (config.auto_invoice_percent or 0.0) / 100.0
             afip_remaining = target - afip_done
 
-        pending = day_orders.filtered(
-            lambda o: o.state == 'paid' and not o.account_move and o.amount_total > 0)
+        pending = (day_orders | catchup_orders).filtered(self._auto_invoice_is_pending)
         skipped_retries = pending.filtered(
             lambda o: o.auto_invoice_attempts >= max_attempts)
         candidates = list(pending - skipped_retries)
@@ -309,7 +361,11 @@ class PosOrder(models.Model):
             '%s-%s-%s-%s' % (config.id, today.isoformat(), len(pending), afip_done)
         ).shuffle(candidates)
 
-        max_per_run = max(1, config.auto_invoice_max_per_run or 10)
+        if session:
+            max_per_run = max(1, len(candidates))
+        else:
+            max_per_run = max(1, config.auto_invoice_max_per_run or 10)
+        recovered_count = len([o for o in candidates if o.state == 'done'])
         run_secondary = bool(secondary_journal) and (
             not afip_blocked or config.auto_invoice_secondary_on_afip_block)
         by_payment_method = config.auto_invoice_mode == 'payment_method'
@@ -416,6 +472,9 @@ class PosOrder(models.Model):
             'config_id': config.id,
             'date': today,
             'is_simulation': dry_run,
+            'trigger': trigger,
+            'session_id': session.id if session else False,
+            'recovered_order_count': recovered_count,
             'total_day': total_day,
             'mode': config.auto_invoice_mode,
             'percent': config.auto_invoice_percent,

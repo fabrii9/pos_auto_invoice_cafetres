@@ -74,6 +74,13 @@ class PosConfig(models.Model):
         string='Intentos por pedido', default=3,
         help='Cantidad de veces que se reintenta facturar un pedido que falla. '
              'Al superarla queda listado en el log para revisión manual.')
+    auto_invoice_catchup_days = fields.Integer(
+        string='Días para recuperar pedidos sin factura', default=7,
+        help='Cuántos días hacia atrás se buscan pedidos que quedaron sin '
+             'facturar en sesiones ya cerradas (por ejemplo, vendidos entre la '
+             'última corrida y el cierre de caja). Se facturan con la fecha del '
+             'día y Odoo revierte su parte del asiento de cierre de la sesión. '
+             '0 desactiva la recuperación.')
     auto_invoice_last_run = fields.Datetime(
         string='Última ejecución automática', readonly=True, copy=False,
         help='Momento de la última corrida real (no simulación) de este punto '
@@ -88,6 +95,9 @@ class PosConfig(models.Model):
     _auto_invoice_max_per_run_range = models.Constraint(
         'CHECK(auto_invoice_max_per_run >= 1 AND auto_invoice_max_per_run <= 100)',
         'El máximo por ejecución debe estar entre 1 y 100.')
+    _auto_invoice_catchup_days_range = models.Constraint(
+        'CHECK(auto_invoice_catchup_days >= 0 AND auto_invoice_catchup_days <= 90)',
+        'Los días para recuperar pedidos deben estar entre 0 y 90.')
     _auto_invoice_max_attempts_range = models.Constraint(
         'CHECK(auto_invoice_max_attempts >= 1 AND auto_invoice_max_attempts <= 10)',
         'Los intentos por pedido deben estar entre 1 y 10.')
@@ -154,10 +164,12 @@ class PosConfig(models.Model):
 
     def action_simulate_auto_invoice(self):
         self.ensure_one()
-        log = self.env['pos.order']._auto_invoice_for_config(self, dry_run=True)
+        log = self.env['pos.order']._auto_invoice_for_config(
+            self, dry_run=True, trigger='manual')
         return log.get_formview_action()
 
     def action_run_auto_invoice_now(self):
         self.ensure_one()
-        log = self.env['pos.order']._auto_invoice_for_config(self, dry_run=False)
+        log = self.env['pos.order']._auto_invoice_for_config(
+            self, dry_run=False, trigger='manual')
         return log.get_formview_action()

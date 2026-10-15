@@ -362,3 +362,197 @@ class TestPosAutoInvoiceByPaymentMethod(TestPoSCommon):
         self.config.auto_invoice_mode = 'percent'
         self.assertEqual(
             self.config.auto_invoice_afip_payment_method_ids, self.method_afip)
+
+
+@tagged('post_install', '-at_install')
+class TestPosAutoInvoiceClosedSessions(TestPoSCommon):
+    """Pedidos que pasan a 'done' al cerrar la caja sin haberse facturado."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.PosOrder = cls.env['pos.order']
+        cls.config = cls.basic_config
+
+    class _FakeSession:
+        def __init__(self, state):
+            self.state = state
+
+    class _FakeOrder:
+        def __init__(self, state, session_state='opened', amount=100.0, move=False):
+            self.state = state
+            self.session_id = TestPosAutoInvoiceClosedSessions._FakeSession(session_state)
+            self.amount_total = amount
+            self.account_move = move
+
+    def _pending(self, *args, **kwargs):
+        return self.PosOrder._auto_invoice_is_pending(self._FakeOrder(*args, **kwargs))
+
+    def test_paid_order_is_pending(self):
+        self.assertTrue(self._pending('paid'))
+
+    def test_done_order_of_closed_session_is_pending(self):
+        """El bug: lo vendido entre la última corrida y el cierre de caja."""
+        self.assertTrue(self._pending('done', session_state='closed'))
+
+    def test_done_order_of_open_session_is_not_pending(self):
+        self.assertFalse(self._pending('done', session_state='opened'))
+
+    def test_invoiced_or_non_positive_orders_are_not_pending(self):
+        self.assertFalse(self._pending('done', session_state='closed', move=True))
+        self.assertFalse(self._pending('paid', amount=0.0))
+        self.assertFalse(self._pending('done', session_state='closed', amount=-50.0))
+
+    def test_catchup_domain_window(self):
+        self.config.auto_invoice_catchup_days = 7
+        day_start = fields.Datetime.to_datetime('2026-10-15 03:00:00')
+        domain = dict(
+            ((leaf[0], leaf[1]), leaf[2])
+            for leaf in self.PosOrder._auto_invoice_catchup_domain(self.config, day_start))
+        self.assertEqual(domain[('date_order', '>=')],
+                         fields.Datetime.to_datetime('2026-10-08 03:00:00'))
+        self.assertEqual(domain[('date_order', '<')], day_start)
+        self.assertEqual(domain[('state', '=')], 'done')
+        self.assertEqual(domain[('session_id.state', '=')], 'closed')
+        self.assertEqual(domain[('config_id', '=')], self.config.id)
+
+    def test_catchup_days_range(self):
+        with self.assertRaises(Exception), self.cr.savepoint():
+            self.config.auto_invoice_catchup_days = 91
+            self.config.flush_recordset()
+
+
+@tagged('post_install', '-at_install')
+class TestPosAutoInvoiceOnSessionClose(TestPoSCommon):
+    """El cierre de caja factura los pendientes antes de pasarlos a 'done'."""
+
+    BASE_CLOSE = ('odoo.addons.point_of_sale.models.pos_session.PosSession.'
+                  'action_pos_session_closing_control')
+    AUTO_INVOICE = ('odoo.addons.pos_auto_invoice_cafetres.models.pos_order.PosOrder.'
+                    '_auto_invoice_for_config')
+
+    def setUp(self):
+        super().setUp()
+        self.config = self.basic_config
+        self.config.auto_invoice_enabled = True
+        self.open_new_session()
+
+    def test_close_invoices_session_first(self):
+        calls = []
+
+        def fake_close(session, *args, **kwargs):
+            calls.append('close')
+            return True
+
+        def fake_invoice(model, config, dry_run=False, session=None, trigger='cron'):
+            calls.append(('invoice', config.id, session.id, trigger, dry_run))
+
+        with patch(self.AUTO_INVOICE, fake_invoice), patch(self.BASE_CLOSE, fake_close):
+            self.pos_session.action_pos_session_closing_control()
+        self.assertEqual(calls, [
+            ('invoice', self.config.id, self.pos_session.id, 'session_close', False),
+            'close',
+        ])
+
+    def test_close_without_auto_invoice_does_not_invoice(self):
+        self.config.auto_invoice_enabled = False
+        with patch(self.AUTO_INVOICE) as invoice, \
+                patch(self.BASE_CLOSE, return_value=True):
+            self.pos_session.action_pos_session_closing_control()
+        invoice.assert_not_called()
+
+    def test_invoice_failure_does_not_block_close(self):
+        """AFIP caído al cierre: el cajero cierra igual y queda el log."""
+        with patch(self.AUTO_INVOICE, side_effect=RuntimeError('AFIP caído')), \
+                patch(self.BASE_CLOSE, return_value=True) as close, \
+                patch.object(self.env.cr, 'rollback'), \
+                patch.object(self.env.cr, 'commit'):
+            self.pos_session.action_pos_session_closing_control()
+        close.assert_called_once()
+        log = self.env['pos.auto.invoice.log'].search(
+            [('config_id', '=', self.config.id)], limit=1)
+        self.assertEqual(log.trigger, 'session_close')
+        self.assertIn('AFIP caído', log.error_text)
+
+
+@tagged('post_install', '-at_install')
+class TestPosAutoInvoiceClosingFlow(TestPoSCommon):
+    """De punta a punta: pedidos reales, cierre de caja real, facturas reales."""
+
+    def setUp(self):
+        super().setUp()
+        self.config = self.basic_config
+        self.product = self.create_product('Café', self.categ_basic, 100.0)
+        self.secondary_journal = self.env['account.journal'].create({
+            'name': 'Interno',
+            'code': 'INTX',
+            'type': 'sale',
+            'company_id': self.env.company.id,
+        })
+        self.config.write({
+            'payment_method_ids': [(6, 0, (self.cash_pm1 | self.bank_pm1).ids)],
+            'auto_invoice_mode': 'payment_method',
+            'auto_invoice_journal_id': self.config.invoice_journal_id.id,
+            'auto_invoice_secondary_journal_id': self.secondary_journal.id,
+            'auto_invoice_afip_payment_method_ids': [(6, 0, self.bank_pm1.ids)],
+            'auto_invoice_secondary_payment_method_ids': [(6, 0, self.cash_pm1.ids)],
+            'auto_invoice_partner_id': self.customer.id,
+        })
+        # El proceso commitea por diseño (AFIP); en tests no se puede.
+        commit = patch.object(self.env.cr, 'commit')
+        commit.start()
+        self.addCleanup(commit.stop)
+        self.open_new_session()
+        self.bank_order, self.cash_order = self._create_orders([
+            {'pos_order_lines_ui_args': [(self.product, 1)],
+             'payments': [(self.bank_pm1, 100.0)]},
+            {'pos_order_lines_ui_args': [(self.product, 2)],
+             'payments': [(self.cash_pm1, 200.0)]},
+        ]).values()
+
+    def _close_session(self):
+        cash = sum(self.cash_order.payment_ids.mapped('amount'))
+        self.pos_session.post_closing_cash_details(cash)
+        self.pos_session.close_session_from_ui()
+        self.assertEqual(self.pos_session.state, 'closed')
+
+    def _assert_invoiced(self):
+        self.assertEqual(self.bank_order.account_move.journal_id, self.config.invoice_journal_id)
+        self.assertEqual(self.cash_order.account_move.journal_id, self.secondary_journal)
+        self.assertEqual(
+            set((self.bank_order | self.cash_order).account_move.mapped('state')), {'posted'})
+
+    def test_session_close_invoices_pending_orders(self):
+        self.config.auto_invoice_enabled = True
+        self._close_session()
+        self._assert_invoiced()
+        log = self.env['pos.auto.invoice.log'].search(
+            [('config_id', '=', self.config.id)], limit=1)
+        self.assertEqual(log.trigger, 'session_close')
+        self.assertEqual(log.session_id, self.pos_session)
+        self.assertEqual(log.order_count + log.secondary_order_count, 2)
+
+    def test_cron_recovers_orders_of_closed_session(self):
+        """El caso de producción: la caja cerró sin facturar (antes de este
+        cambio, o con AFIP caído) y los pedidos quedaron en 'done'."""
+        self.config.auto_invoice_enabled = False
+        self._close_session()
+        orders = self.bank_order | self.cash_order
+        self.assertEqual(set(orders.mapped('state')), {'done'})
+        self.assertFalse(orders.account_move)
+        # Que sean de días anteriores: solo los encuentra la recuperación.
+        orders.write({'date_order': fields.Datetime.subtract(fields.Datetime.now(), days=2)})
+
+        self.config.write({'auto_invoice_enabled': True, 'auto_invoice_catchup_days': 0})
+        self.env['pos.order']._auto_invoice_for_config(self.config)
+        self.assertFalse(orders.account_move, 'con 0 días no se recupera nada')
+
+        self.config.auto_invoice_catchup_days = 7
+        log = self.env['pos.order']._auto_invoice_for_config(self.config)
+        self._assert_invoiced()
+        self.assertEqual(log.recovered_order_count, 2)
+        # Odoo saca estos pedidos del asiento de cierre con una reversión.
+        reversals = self.env['account.move'].search(
+            [('reversed_pos_order_id', 'in', orders.ids)])
+        self.assertEqual(len(reversals), 2)
+        self.assertEqual(set(reversals.mapped('state')), {'posted'})
