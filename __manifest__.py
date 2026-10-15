@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'POS: Facturación automática por porcentaje',
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'summary': 'Check Factura destildado por defecto y facturación automática de un % de las ventas del día a Consumidor Final',
     'category': 'Sales/Point of Sale',
     'author': 'Aftermoves',

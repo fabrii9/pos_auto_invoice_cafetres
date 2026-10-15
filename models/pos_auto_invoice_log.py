@@ -12,6 +12,17 @@ class PosAutoInvoiceLog(models.Model):
         'pos.config', string='Punto de venta', readonly=True, ondelete='cascade')
     date = fields.Date(string='Fecha', readonly=True)
     is_simulation = fields.Boolean(string='Simulación', readonly=True)
+    trigger = fields.Selection(
+        [('cron', 'Automática (cron)'),
+         ('manual', 'Manual'),
+         ('session_close', 'Cierre de caja')],
+        string='Origen', readonly=True, default='cron')
+    session_id = fields.Many2one(
+        'pos.session', string='Sesión cerrada', readonly=True, ondelete='set null')
+    recovered_order_count = fields.Integer(
+        string='Pedidos de sesiones cerradas', readonly=True,
+        help='Pedidos candidatos que ya estaban en estado "done" (sesión cerrada '
+             'sin factura) y entraron en esta corrida para recuperarlos.')
     mode = fields.Selection(
         [('percent', 'Por porcentaje fijo'),
          ('payment_method', 'Por método de pago')],

@@ -9,6 +9,7 @@
                 <field name="config_id"/>
                 <field name="date"/>
                 <field name="is_simulation"/>
+                <field name="trigger"/>
                 <field name="mode"/>
                 <field name="total_day"/>
                 <field name="percent"/>
@@ -18,6 +19,7 @@
                 <field name="invoiced_amount"/>
                 <field name="secondary_invoiced_amount"/>
                 <field name="order_count"/>
+                <field name="recovered_order_count" optional="show"/>
                 <field name="error_count" widget="badge" decoration-danger="error_count &gt; 0"/>
             </list>
         </field>
@@ -37,6 +39,8 @@
                             <field name="config_id"/>
                             <field name="date"/>
                             <field name="is_simulation"/>
+                            <field name="trigger"/>
+                            <field name="session_id" invisible="not session_id"/>
                             <field name="mode"/>
                             <field name="percent" invisible="mode != 'percent'"/>
                         </group>
@@ -49,6 +53,7 @@
                             <field name="order_count"/>
                             <field name="secondary_invoiced_amount"/>
                             <field name="secondary_order_count"/>
+                            <field name="recovered_order_count"/>
                         </group>
                     </group>
                     <group string="Verificación AFIP" invisible="not afip_message and not afip_blocked">

@@ -102,6 +102,17 @@
                                     <field name="pos_auto_invoice_max_attempts" required="pos_auto_invoice_enabled"/>
                                 </div>
                             </div>
+                            <div class="row mt16">
+                                <label string="Días para recuperar pedidos" for="pos_auto_invoice_catchup_days" class="col-lg-3 o_light_label"/>
+                                <div class="col-lg-6">
+                                    <field name="pos_auto_invoice_catchup_days"/>
+                                    <div class="text-muted small">
+                                        Al cerrar la caja se facturan los pedidos pendientes de la sesión. Si algo
+                                        queda sin facturar (por ejemplo, AFIP caído al cierre), cada corrida lo busca
+                                        en las sesiones cerradas de estos últimos días. 0 desactiva la recuperación.
+                                    </div>
+                                </div>
+                            </div>
                             <div class="mt8">
                                 <button name="action_pos_auto_invoice_simulate" type="object"
                                     string="Simular" class="btn-secondary" icon="oi-search"/>
