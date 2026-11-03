@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Responsabilidad ARCA obligatoria en el formulario de contacto. El POS
+         crea y edita clientes con este mismo formulario (en un diálogo), así
+         que la regla aplica en los dos lados. Los contactos hijos la heredan
+         del contacto comercial (allí es de solo lectura). -->
+    <record id="res_partner_view_form_ar_responsibility_required" model="ir.ui.view">
+        <field name="name">res.partner.form.ar.responsibility.required</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="l10n_ar.base_view_partner_form"/>
+        <field name="arch" type="xml">
+            <field name="l10n_ar_afip_responsibility_type_id" position="attributes">
+                <attribute name="required">'AR' in fiscal_country_codes and not parent_id</attribute>
+            </field>
+        </field>
+    </record>
+</odoo>

@@ -556,3 +556,76 @@ class TestPosAutoInvoiceClosingFlow(TestPoSCommon):
             [('reversed_pos_order_id', 'in', orders.ids)])
         self.assertEqual(len(reversals), 2)
         self.assertEqual(set(reversals.mapped('state')), {'posted'})
+
+
+@tagged('post_install', '-at_install')
+class TestPartnerArcaResponsibility(TestPoSCommon):
+    """Sin responsabilidad ARCA un contacto con CUIT no se puede facturar
+    (pedidos 269-1-000806 y 269-1-002586 en producción)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.Partner = cls.env['res.partner']
+        cls.cuit = cls.env.ref('l10n_ar.it_cuit')
+        cls.dni = cls.env.ref('l10n_ar.it_dni')
+        cls.resp_ri = cls.env.ref('l10n_ar.res_IVARI')
+
+    def test_cuit_without_responsibility_is_rejected(self):
+        from odoo.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self.Partner.create({
+                'name': 'Sin responsabilidad',
+                'l10n_latam_identification_type_id': self.cuit.id,
+                'vat': '20264784167',
+            })
+
+    def test_dni_without_responsibility_is_rejected(self):
+        from odoo.exceptions import ValidationError
+        with self.assertRaises(ValidationError):
+            self.Partner.create({
+                'name': 'Con DNI',
+                'l10n_latam_identification_type_id': self.dni.id,
+                'vat': '26478416',
+            })
+
+    def test_cuit_with_responsibility_is_accepted(self):
+        partner = self.Partner.create({
+            'name': 'Responsable Inscripto',
+            'l10n_latam_identification_type_id': self.cuit.id,
+            'vat': '20264784167',
+            'l10n_ar_afip_responsibility_type_id': self.resp_ri.id,
+        })
+        self.assertEqual(partner.l10n_ar_afip_responsibility_type_id, self.resp_ri)
+
+    def test_contact_without_vat_is_accepted(self):
+        """Creación rápida desde un campo (solo nombre): no se bloquea."""
+        partner = self.Partner.name_create('Solo nombre')
+        self.assertTrue(partner)
+
+    def test_removing_responsibility_is_rejected(self):
+        from odoo.exceptions import ValidationError
+        partner = self.Partner.create({
+            'name': 'RI',
+            'l10n_latam_identification_type_id': self.cuit.id,
+            'vat': '20264784167',
+            'l10n_ar_afip_responsibility_type_id': self.resp_ri.id,
+        })
+        with self.assertRaises(ValidationError):
+            partner.l10n_ar_afip_responsibility_type_id = False
+
+    def test_child_contact_is_not_checked(self):
+        parent = self.Partner.create({
+            'name': 'Empresa',
+            'l10n_latam_identification_type_id': self.cuit.id,
+            'vat': '20264784167',
+            'l10n_ar_afip_responsibility_type_id': self.resp_ri.id,
+        })
+        child = self.Partner.create({'name': 'Contacto', 'parent_id': parent.id})
+        self.assertEqual(child.l10n_ar_afip_responsibility_type_id, self.resp_ri)
+
+    def test_form_requires_responsibility(self):
+        """El formulario (el mismo que abre el POS) marca el campo obligatorio."""
+        arch = self.env['res.partner'].get_view(
+            self.env.ref('base.view_partner_form').id, 'form')['arch']
+        self.assertIn('required="\'AR\' in fiscal_country_codes and not parent_id"', arch)
